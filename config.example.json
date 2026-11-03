@@ -1,0 +1,24 @@
+{
+  "activityType": 3,
+  "pages": ["activity", "agents", "tokens", "value", "usage"],
+  "showProject": true,
+  "liveLine": true,
+  "idleMinutes": 15,
+  "pageSeconds": 15,
+  "limitPercent": 80,
+  "valueDays": 30,
+  "projectImages": {
+    "my-project": "https://example.com/my-project-cover.png"
+  },
+  "includeRemotes": true,
+  "remotes": [
+    {
+      "name": "Server",
+      "ssh": "user@server.local",
+      "port": 22,
+      "key": "~/.ssh/id_ed25519",
+      "userData": "S:\\home\\user\\.t3\\userdata",
+      "transcripts": "S:\\home\\user\\.claude\\projects"
+    }
+  ]
+}

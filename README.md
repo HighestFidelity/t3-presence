@@ -1,0 +1,50 @@
+# T3 Presence
+Discord Rich Presence for [T3 Code](https://github.com/pingdotgg/t3code) as one portable Windows app. Unofficial, not affiliated with T3 or Discord.
+
+Open it and your presence is on. X hides it to the tray, tray Exit clears the presence and quits. It shows as Watching by default, so it sits next to a game instead of replacing it.
+
+It costs zero model tokens: no model or API calls. It reads T3's files and talks to the Discord app over its local pipe. No Discord token is involved, the local pipe only needs an Application ID.
+
+## Pages
+They rotate every 15 s. Toggle each in Settings.
+
+| Page | Line 1 | Line 2 | Image hover |
+|---|---|---|---|
+| Activity | Working in my-project | Editing a file | Model and effort |
+| Agents | 3 agents running + 2 sub | 2x Opus 5.5 max, Opus 5.5 high | Context 157k of 1M |
+| Tokens | Today: 213k in, 723k out | Cache: 74.9M read, 2.8M write | Last 7 days: 136.2M tokens |
+| Value | Token value today: $40.08 | Last 30 days: $220.31 | API list prices, not a bill. |
+| Plan | 5h limit: 55% used, resets in 4h37m | Week limit: 62% used, resets in 1d11h | Model and effort |
+
+Friends can see all of this. The live line uses fixed wording per item kind, and unknown tools read "Using a tool". Thread titles, messages, file paths and commands are never read for display. `showProject: false` hides project names too.
+
+## All environments
+By default it counts this PC. To add a linked machine, put it in `remotes` in `config.json` (see `config.example.json`):
+
+- `ssh`, `port`, `key`: one SSH session using the Windows ssh client. `src/remote-state.py` is sent inline and prints T3's state every 15 s. It needs `python3` on that machine, installs nothing and writes nothing.
+- `userData`, `transcripts`: that machine's `~/.t3/userdata` and `~/.claude/projects` as this PC can read them, normally a network share. Never open a T3 database over a share: SQLite's WAL mode isn't safe there, which is why live state goes over SSH.
+
+Counts and token totals add up across machines. Project, model and context come from whichever ran last. If a machine is away, the window says so and the app keeps retrying quietly. The Settings toggle turns this off.
+
+## Where the numbers come from
+- Tokens and value: the same arithmetic as T3's Usage page. `usage-scan-cache-v*.json` rows plus what the Claude transcripts grew since, deduped on message id + request id, priced from `usage-model-rates.json`. Refreshed at most every 2 min, and only new bytes get read. The 30 days match that page's default window; `valueDays` changes it.
+- Plan limits: the newest `rate_limit_event` in T3's provider logs.
+- Live state: T3's `statev2.sqlite`, opened read-only. As with any WAL reader, SQLite itself touches the `-shm` read marks. Nothing else writes to T3 files.
+
+These are T3's private formats, so a T3 update can break this.
+
+## Images
+- Large image: `projectImages`. Lookup order is `"<project>|<state>"`, `"<project>"`, `"*|<state>"`, then `largeImageKey`. States are `working`, `idle`, `limit`. The Settings tab edits the entry for the project on screen.
+- Small overlay: `stateImages`, defaulting to public Twemoji dots on jsDelivr. Discord fetches those, the app never does. `limit` applies from `limitPercent` (80).
+- Discord only accepts a public https URL or an art asset uploaded in the Developer Portal, so generated per-project covers need one of those.
+
+## Build
+```
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+Makes the multi-size icon from `t3-logo-1024.png` and compiles with the .NET Framework 4.8 `csc` that ships with Windows. No SDK, NuGet or npm. Uses `winsqlite3.dll` from System32.
+
+`config.json` sits next to the exe and is created on first run. `clientId` defaults to a shared Discord application named T3 Code; to use your own, create one in the Developer Portal and put its Application ID there.
+
+## Flags
+`--dump [file]` writes every page's JSON and exits. `--minimized` starts in the tray (Start with Windows uses it). `--settings` opens the Settings tab. `--exit` closes the running copy. `--test-drop=N` drops the Discord pipe once after N seconds.
