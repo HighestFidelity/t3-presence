@@ -7,6 +7,7 @@
   "pageSeconds": 15,
   "limitPercent": 80,
   "valueDays": 30,
+  "hubUrl": "",
   "projectImages": {
     "my-project": "https://example.com/my-project-cover.png"
   },

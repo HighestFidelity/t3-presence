@@ -4,7 +4,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
 using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -225,17 +227,114 @@ namespace T3Presence
         }
     }
 
-    // Plan usage: newest rate_limit_event in the T3 provider logs.
+    // Plan usage. With a CLIProxy hub: every enabled Claude account's real limits, read the way T3's own hub source does it
+    // (management auth-files, then api-call to Anthropic's OAuth usage endpoint). Without one, or if the hub fails:
+    // the newest rate_limit_event in the T3 provider logs, which only ever shows whichever account answered last.
     public class PlanWindow { public int Used; public int? InMin; }
+    public class PlanAccount { public PlanWindow FiveHour, Week; }
     public class PlanUsage
     {
         public PlanWindow FiveHour, Week;
+        public volatile List<PlanAccount> Accounts = new List<PlanAccount>();
+        public string HubUrl, HubKey, HubError;
         public readonly List<string> UserDataDirs = new List<string> { T3.UserData };
         DateTime at = DateTime.MinValue;
+        public bool FromHub { get { return Accounts.Count > 0; } }
+        // csc output has no TargetFramework attribute, so .NET runs it with legacy TLS defaults unless told otherwise.
+        static PlanUsage() { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; }
+        // Hub url (and key, when T3 stores it in the clear) from T3's own usageLimitSources; T3 normally masks the key.
+        public static void FromT3Settings(out string url, out string key)
+        {
+            url = key = null;
+            try
+            {
+                var srcs = Json.Get(Json.Parse(File.ReadAllText(Path.Combine(T3.UserData, "settings.json"))), "usageLimitSources") as IDictionary<string, object>;
+                if (srcs == null) return;
+                foreach (var v in srcs.Values)
+                {
+                    var en = Json.Get(v, "enabled");
+                    if (Json.Str(Json.Get(v, "kind")) != "cliproxy" || (en is bool && !(bool)en)) continue;
+                    url = Json.Str(Json.Get(v, "url"));
+                    var k = Json.Str(Json.Get(v, "managementKey"));
+                    if (!string.IsNullOrEmpty(k) && k.IndexOf('•') < 0) key = k;
+                    return;
+                }
+            }
+            catch { }
+        }
         public void Refresh()
         {
-            if ((DateTime.UtcNow - at).TotalSeconds < 120) return;
+            if ((DateTime.UtcNow - at).TotalSeconds < (string.IsNullOrEmpty(HubKey) ? 120 : 180)) return;
             at = DateTime.UtcNow;
+            if (!string.IsNullOrEmpty(HubUrl) && !string.IsNullOrEmpty(HubKey))
+            {
+                try { if (RefreshHub()) { HubError = null; return; } }
+                catch (Exception e) { HubError = e.Message; Accounts = new List<PlanAccount>(); }
+            }
+            RefreshLogs();
+        }
+
+        object Hub(string path, object body)
+        {
+            var req = (HttpWebRequest)WebRequest.Create(HubUrl.TrimEnd('/') + "/v0/management/" + path);
+            req.Timeout = req.ReadWriteTimeout = 20000;
+            req.Headers["Authorization"] = "Bearer " + HubKey;
+            if (body != null)
+            {
+                req.Method = "POST"; req.ContentType = "application/json";
+                var b = Encoding.UTF8.GetBytes(Json.Write(body));
+                using (var rs = req.GetRequestStream()) rs.Write(b, 0, b.Length);
+            }
+            try
+            {
+                using (var resp = req.GetResponse())
+                using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) return Json.Parse(sr.ReadToEnd());
+            }
+            catch (WebException e)
+            {
+                var r = e.Response as HttpWebResponse;
+                throw new IOException(r != null ? "hub answered HTTP " + (int)r.StatusCode : "hub unreachable: " + e.Status);
+            }
+        }
+        bool RefreshHub()
+        {
+            var files = Json.Get(Hub("auth-files", null), "files") as object[];
+            if (files == null) throw new IOException("hub sent no account list");
+            var list = new List<PlanAccount>();
+            foreach (var f in files.OrderBy(x => Json.Str(Json.Get(x, "id")), StringComparer.Ordinal))
+            {
+                var dis = Json.Get(f, "disabled");
+                if (Json.Str(Json.Get(f, "provider")) != "claude" || (dis is bool && (bool)dis)) continue;
+                var call = new Dictionary<string, object> {
+                    {"auth_index", Json.Str(Json.Get(f, "auth_index"))}, {"method", "GET"}, {"url", "https://api.anthropic.com/api/oauth/usage"},
+                    {"header", new Dictionary<string, object> { {"Authorization", "Bearer $TOKEN$"}, {"anthropic-beta", "oauth-2025-04-20"}, {"User-Agent", "claude-code/2.1.273"} }} };
+                var r = Hub("api-call", call);
+                var code = Json.Num(Json.Get(r, "status_code")) ?? 0; var body = Json.Str(Json.Get(r, "body"));
+                if (code < 200 || code >= 300 || body == null) continue;
+                object u; try { u = Json.Parse(body); } catch { continue; }
+                list.Add(new PlanAccount { FiveHour = HubWindow(Json.Get(u, "five_hour")), Week = HubWindow(Json.Get(u, "seven_day")) });
+            }
+            if (list.Count == 0) throw new IOException("hub could not read any account's usage");
+            Accounts = list;
+            // The pool is only stuck when every account is: headline numbers are the account with the most room.
+            FiveHour = list.Where(a => a.FiveHour != null).Select(a => a.FiveHour).OrderBy(w => w.Used).FirstOrDefault();
+            Week = list.Where(a => a.Week != null).Select(a => a.Week).OrderBy(w => w.Used).FirstOrDefault();
+            return true;
+        }
+        static PlanWindow HubWindow(object x)
+        {
+            if (x == null) return null;
+            DateTime at; var s = Json.Str(Json.Get(x, "resets_at"));
+            int? inMin = null; bool stale = false;
+            if (s != null && DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out at))
+            {
+                var m = (at - DateTime.UtcNow).TotalMinutes; stale = m <= 0; inMin = Math.Max(0, (int)Math.Round(m));
+            }
+            return new PlanWindow { Used = stale ? 0 : (int)Math.Round(Json.Num(Json.Get(x, "utilization")) ?? 0), InMin = inMin };
+        }
+
+        void RefreshLogs()
+        {
             try
             {
                 var all = new List<FileInfo>();

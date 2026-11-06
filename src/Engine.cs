@@ -19,7 +19,7 @@ namespace T3Presence
         public static readonly string[] AllPages = { "activity", "agents", "tokens", "value", "usage" };
         const string Twemoji = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/";
 
-        public string clientId = DefaultClientId, largeImageKey = DefaultImage;
+        public string clientId = DefaultClientId, largeImageKey = DefaultImage, hubUrl = "";
         public bool showProject = true, liveLine = true;
         public int idleMinutes = 15, pageSeconds = 15, activityType = 3, limitPercent = 80, valueDays = 30;
         public List<string> pages = new List<string>(AllPages);
@@ -42,6 +42,7 @@ namespace T3Presence
                     var d = Json.Parse(File.ReadAllText(FilePath));
                     c.clientId = Json.Str(Json.Get(d, "clientId")) ?? c.clientId;
                     c.largeImageKey = Json.Str(Json.Get(d, "largeImageKey")) ?? c.largeImageKey;
+                    c.hubUrl = Json.Str(Json.Get(d, "hubUrl")) ?? c.hubUrl;
                     var b = Json.Get(d, "showProject"); if (b is bool) c.showProject = (bool)b;
                     b = Json.Get(d, "liveLine"); if (b is bool) c.liveLine = (bool)b;
                     c.idleMinutes = Clamp(Json.Num(Json.Get(d, "idleMinutes")), c.idleMinutes, 1, 1440);
@@ -78,7 +79,7 @@ namespace T3Presence
             try
             {
                 var d = new Dictionary<string, object> { {"clientId",clientId},{"activityType",activityType},{"pages",pages},{"showProject",showProject},{"liveLine",liveLine},
-                    {"idleMinutes",idleMinutes},{"pageSeconds",pageSeconds},{"limitPercent",limitPercent},{"valueDays",valueDays},{"largeImageKey",largeImageKey},
+                    {"idleMinutes",idleMinutes},{"pageSeconds",pageSeconds},{"limitPercent",limitPercent},{"valueDays",valueDays},{"largeImageKey",largeImageKey},{"hubUrl",hubUrl},
                     {"projectImages",projectImages},{"stateImages",stateImages},{"includeRemotes",includeRemotes},{"remotes",remotes} };
                 File.WriteAllText(FilePath, Pretty(Json.Write(d)));
             }
@@ -300,6 +301,10 @@ namespace T3Presence
         public Engine(Config c)
         {
             Cfg = c;
+            string hubUrl, hubKey; PlanUsage.FromT3Settings(out hubUrl, out hubKey);
+            Plan.HubUrl = string.IsNullOrWhiteSpace(c.hubUrl) ? hubUrl : c.hubUrl.Trim();
+            try { var kf = Config.PathOf("hub.key"); if (File.Exists(kf)) hubKey = File.ReadAllText(kf).Trim(); } catch { }
+            Plan.HubKey = hubKey;
             Rpc.Changed += () => { lastKey = ""; sentAny = false; ThreadPool.QueueUserWorkItem(_ => Tick(false)); };
             foreach (var r in c.remotes)
             {
@@ -412,6 +417,17 @@ namespace T3Presence
             }
             if (name == "usage")
             {
+                var acc = Plan.Accounts;
+                if (acc.Count > 1)
+                {
+                    Func<string, Func<PlanAccount, PlanWindow>, string> line = (label, pick) =>
+                    {
+                        var ws = acc.Select(pick).ToList();
+                        if (ws.All(x => x == null)) return null;
+                        return label + " limits: " + string.Join(" / ", ws.Select(x => x == null ? "?" : x.Used + "%")) + " used, resets " + string.Join(" / ", ws.Select(x => x == null ? "?" : Dur(x.InMin)));
+                    };
+                    return new PageText { Name = name, Details = line("5h", a => a.FiveHour), State = line("Week", a => a.Week), Hover = acc.Count + " accounts pooled through the hub" };
+                }
                 var f = Plan.FiveHour; var w = Plan.Week;
                 if (f == null && w == null) return null;
                 return new PageText { Name = name, Details = f != null ? "5h limit: " + f.Used + "% used, resets in " + Dur(f.InMin) : null, State = w != null ? "Week limit: " + w.Used + "% used, resets in " + Dur(w.InMin) : null, Hover = s.Model };
@@ -461,7 +477,7 @@ namespace T3Presence
             var s = ReadAll(); var sb = new StringBuilder();
             var t = Scan.Range(1); var w = Scan.Range(7); var v = Scan.Range(Cfg.valueDays);
             sb.AppendLine(Json.Write(new Dictionary<string, object> { {"error",s.Error},{"running",s.Running},{"subagents",s.Subagents},{"sessions",s.Sessions},{"threads",s.Threads},{"project",s.Project},{"model",s.Model},{"live",s.Live},{"runningModels",s.RunningModels},{"ctx",s.CtxUsed+"/"+s.CtxMax},
-                {"today",t},{"week",w},{"valueWindow",v},{"scanError",Scan.Error},{"plan5h",Plan.FiveHour},{"planWeek",Plan.Week},{"coverage",Coverage()} }));
+                {"today",t},{"week",w},{"valueWindow",v},{"scanError",Scan.Error},{"plan5h",Plan.FiveHour},{"planWeek",Plan.Week},{"planSource",Plan.FromHub ? "hub" : "logs"},{"planAccounts",Plan.Accounts},{"hubError",Plan.HubError},{"coverage",Coverage()} }));
             foreach (var n in Config.AllPages)
             {
                 var p = PageFor(n, s);
