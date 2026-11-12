@@ -7,17 +7,17 @@ Discord Rich Presence for [T3 Code](https://github.com/pingdotgg/t3code) as one 
 
 Or let your agent do it: paste the prompt in [AGENT_SETUP.md](AGENT_SETUP.md) into T3 Code. It installs, finds your hub and other machines, and checks the numbers.
 
-Open it and your presence is on. X hides it to the tray, tray Exit clears the presence and quits. It shows as Watching by default, so it sits next to a game instead of replacing it.
+Open it and your presence is on. X hides it to the tray, tray Exit clears the presence and quits, tray Restart starts a fresh copy. Click a page chip under Rotation to show that page now. It shows as Watching by default, so it sits next to a game instead of replacing it.
 
 It costs zero model tokens: no model or API calls. It reads T3's files and talks to the Discord app over its local pipe. No Discord token is involved, the local pipe only needs an Application ID.
 
 ## Pages
-They rotate every 15 s. Toggle each in Settings.
+They rotate every 15 s. Toggle each in Settings. Activity and Agents list every project with a running agent.
 
 | Page | Line 1 | Line 2 | Image hover |
 |---|---|---|---|
 | Activity | Working in my-project | Editing a file | Model and effort |
-| Agents | 3 agents running + 2 sub | 2x Opus 5.5 max, Opus 5.5 high | Context 157k of 1M |
+| Agents | 3 agents running + 2 sub in my-project, other-project | 2x Opus 5.5 max, Opus 5.5 high | Context 157k of 1M |
 | Tokens | Today: 213k in, 723k out | Cache: 74.9M read, 2.8M write | Last 7 days: 136.2M tokens |
 | Value | Token value today: $40.08 | Last 30 days: $220.31 | API list prices, not a bill. |
 | Plan | 5h limit: 55% used, resets in 4h37m | Week limit: 62% used, resets in 1d11h | Model and effort |
@@ -49,9 +49,9 @@ These are T3's private formats, so a T3 update can break this.
 ```
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
-Makes the multi-size icon from `t3-logo-1024.png` and compiles with the .NET Framework 4.8 `csc` that ships with Windows. No SDK, NuGet or npm. Uses `winsqlite3.dll` from System32.
+Makes the multi-size icon from `t3-logo-1024.png`, runs `cargo build --release` and copies the exe next to the script. Needs Rust (rustup, MSVC toolchain). Written in Rust: egui window, a Win32 tray, bundled SQLite opened read-only. `cargo test` checks the text formats.
 
 `config.json` sits next to the exe and is created on first run. `clientId` defaults to a shared Discord application named T3 Code; to use your own, create one in the Developer Portal and put its Application ID there.
 
 ## Flags
-`--dump [file]` writes every page's JSON and exits. `--minimized` starts in the tray (Start with Windows uses it). `--settings` opens the Settings tab. `--exit` closes the running copy. `--test-drop=N` drops the Discord pipe once after N seconds.
+`--dump [file]` writes every page's JSON and exits. `--minimized` starts in the tray (Start with Windows uses it). `--settings` opens the Settings tab. `--exit` closes the running copy. `--restart` restarts it. `--test-drop=N` drops the Discord pipe once after N seconds.
