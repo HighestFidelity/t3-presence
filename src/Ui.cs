@@ -117,12 +117,14 @@ namespace T3Presence
             miAuto.Click += (a, b) => SetAuto(miAuto.Checked);
             menu.Items.Add(miPause); menu.Items.Add(miAuto);
             menu.Items.Add(new Forms.ToolStripSeparator());
+            menu.Items.Add("Restart", null, (a, b) => { Restart = true; Quit(); });
             menu.Items.Add("Exit", null, (a, b) => Quit());
             tray = new Forms.NotifyIcon { Icon = ico, Text = "T3 Presence", ContextMenuStrip = menu, Visible = true };
             tray.DoubleClick += (a, b) => ShowWindow();
         }
         public void ShowWindow() { w.Show(); if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal; w.Activate(); }
         public void OpenSettingsTab() { F<System.Windows.Controls.Primitives.ToggleButton>("TabSet").IsChecked = true; }
+        public static bool Restart;
         public void Quit()
         {
             quitting = true; tray.Visible = false; tray.Dispose();
@@ -243,7 +245,9 @@ namespace T3Presence
             foreach (var n in s.Pages.Count > 0 ? s.Pages : eng.Cfg.pages.ToList())
             {
                 bool on = n == s.PageName;
-                chips.Children.Add(new Border { CornerRadius = new CornerRadius(12), Padding = new Thickness(11, 4, 11, 4), Margin = new Thickness(0, 0, 6, 6), Background = on ? B("#5865F2") : B("#26FFFFFF"), Child = new TextBlock { Text = Names[n], FontSize = 12, Padding = new Thickness(0, 0, 2, 0), Foreground = on ? Brushes.White : B("#B5BAC1") } });
+                var chip = new Border { CornerRadius = new CornerRadius(12), Padding = new Thickness(11, 4, 11, 4), Margin = new Thickness(0, 0, 6, 6), Background = on ? B("#5865F2") : B("#26FFFFFF"), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = "Show this page now", Child = new TextBlock { Text = Names[n], FontSize = 12, Padding = new Thickness(0, 0, 2, 0), Foreground = on ? Brushes.White : B("#B5BAC1") } };
+                var name = n; chip.MouseLeftButtonUp += (a, b) => eng.JumpTo(name);
+                chips.Children.Add(chip);
             }
             // overlay dot
             var ov = F<UIElement>("Overlay"); ov.Visibility = s.Overlay != null ? Visibility.Visible : Visibility.Collapsed;
@@ -296,13 +300,14 @@ namespace T3Presence
         static int Main(string[] args)
         {
             AppDomain.CurrentDomain.UnhandledException += (a, e) => Log.Write("crash: " + e.ExceptionObject);
-            string dumpPath = null; bool minimized = false, settingsTab = false, exit = false; int drop = 0;
+            string dumpPath = null; bool minimized = false, settingsTab = false, exit = false, restart = false; int drop = 0;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--dump") dumpPath = i + 1 < args.Length ? args[i + 1] : Config.PathOf("T3Presence.dump.txt");
                 else if (args[i] == "--minimized") minimized = true;
                 else if (args[i] == "--settings") settingsTab = true;
                 else if (args[i] == "--exit") exit = true;
+                else if (args[i] == "--restart") restart = true;
                 else if (args[i].StartsWith("--test-drop=")) int.TryParse(args[i].Substring(12), out drop);
             }
             var cfg = Config.Load();
@@ -315,14 +320,15 @@ namespace T3Presence
             using (var mutex = new Mutex(true, @"Local\T3Presence.Singleton", out first))
             using (var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\T3Presence.Show"))
             using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\T3Presence.Exit"))
+            using (var again = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\T3Presence.Restart"))
             {
                 if (!first)
                 {
-                    if (exit) quit.Set(); else show.Set();
-                    Log.Write(exit ? "second launch: asked the running copy to exit" : "second launch: asked the running copy to show itself");
+                    if (exit) quit.Set(); else if (restart) again.Set(); else show.Set();
+                    Log.Write("second launch: asked the running copy to " + (exit ? "exit" : restart ? "restart" : "show itself"));
                     return 0;
                 }
-                if (exit) return 0;
+                if (exit || restart) return 0;
                 Autostart.Refresh();
                 var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
                 app.DispatcherUnhandledException += (a, e) => { Log.Write("ui error: " + e.Exception); e.Handled = true; };
@@ -331,10 +337,17 @@ namespace T3Presence
                 var waiter = new Thread(() => { while (show.WaitOne()) app.Dispatcher.BeginInvoke(new Action(ui.ShowWindow)); }) { IsBackground = true };
                 waiter.Start();
                 new Thread(() => { quit.WaitOne(); app.Dispatcher.BeginInvoke(new Action(ui.Quit)); }) { IsBackground = true }.Start();
+                new Thread(() => { again.WaitOne(); app.Dispatcher.BeginInvoke(new Action(() => { Ui.Restart = true; ui.Quit(); })); }) { IsBackground = true }.Start();
                 if (settingsTab) ui.OpenSettingsTab();
                 eng.Start();
                 app.Run();
                 GC.KeepAlive(mutex);
+            }
+            // Tray Restart: the singleton mutex is released above, so the new copy starts as the first one.
+            if (Ui.Restart)
+            {
+                Log.Write("restarting");
+                try { Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--minimized") { UseShellExecute = false }); } catch (Exception e) { Log.Write("restart failed: " + e.Message); }
             }
             return 0;
         }

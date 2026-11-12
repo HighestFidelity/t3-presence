@@ -293,7 +293,7 @@ namespace T3Presence
         public readonly PlanUsage Plan = new PlanUsage(); public readonly UsageScan Scan = new UsageScan();
         public event Action<Snapshot> Updated;
         public bool Paused;
-        Timer timer; int page = -1; DateTime sessionStart = DateTime.MinValue; string lastKey = ""; bool sentAny; int busy; DateTime nextConnect = DateTime.MinValue, lastSend = DateTime.MinValue;
+        Timer timer; int page = -1; volatile string jump; Timer retry; DateTime sessionStart = DateTime.MinValue; string lastKey = ""; bool sentAny; int busy; DateTime nextConnect = DateTime.MinValue, lastSend = DateTime.MinValue;
         public int TestDropAfter; DateTime started = DateTime.UtcNow; bool dropped;
 
         readonly List<RemoteLink> links = new List<RemoteLink>(); volatile bool stopping;
@@ -360,11 +360,23 @@ namespace T3Presence
         }
         public static string TypeWord(int t) { return t == 0 ? "Playing" : t == 2 ? "Listening to" : t == 5 ? "Competing in" : "Watching"; }
 
+        static bool Shown(string p)
+        {   // The card already says T3 Code, so a project with that name adds nothing.
+            return !string.IsNullOrEmpty(p) && p != "No project" && !p.Equals("T3 Code", StringComparison.OrdinalIgnoreCase) && !p.Equals("t3code", StringComparison.OrdinalIgnoreCase);
+        }
         string ProjectName(T3State s)
         {
-            if (!Cfg.showProject || string.IsNullOrEmpty(s.Project) || s.Project == "No project") return null;
-            // The card already says T3 Code, so a project with that name adds nothing.
-            return s.Project.Equals("T3 Code", StringComparison.OrdinalIgnoreCase) || s.Project.Equals("t3code", StringComparison.OrdinalIgnoreCase) ? null : s.Project;
+            if (!Cfg.showProject) return null;
+            var run = s.Running > 0 ? s.RunningProjects.FirstOrDefault(Shown) : null;
+            return run ?? (Shown(s.Project) ? s.Project : null);
+        }
+        // Every project with a running agent, newest first, cut to fit Discord's 128 chars.
+        string ProjectsText(T3State s)
+        {
+            if (!Cfg.showProject) return null;
+            var list = s.Running > 0 ? s.RunningProjects.Where(Shown).ToList() : new List<string>();
+            if (list.Count == 0) return ProjectName(s);
+            return GroupModels(list, 128 - "Working in ".Length);
         }
         static string Agents(T3State s) { return s.Running + " agent" + (s.Running == 1 ? "" : "s") + " running" + (s.Subagents > 0 ? " + " + s.Subagents + " sub" : ""); }
         public static string GroupModels(List<string> list, int max)
@@ -385,7 +397,7 @@ namespace T3Presence
         // Each page says a thing once: no complements, no totals repeating the parts, no app name (the card header has it).
         public PageText PageFor(string name, T3State s)
         {
-            var proj = ProjectName(s);
+            var proj = ProjectsText(s);
             if (name == "activity")
             {
                 var word = s.Running > 0 ? "Working" : "Reviewing";
@@ -401,7 +413,11 @@ namespace T3Presence
             if (name == "agents")
             {
                 if (s.Running <= 0) return null;
-                return new PageText { Name = name, Details = Agents(s), State = GroupModels(s.RunningModels, 128), Hover = s.CtxMax > 0 ? "Context " + Tok(s.CtxUsed) + " of " + Tok(s.CtxMax) : null };
+                // His rotation may be Agents only, so the running projects show here too.
+                var plist = Cfg.showProject ? s.RunningProjects.Where(Shown).ToList() : new List<string>();
+                var head = Agents(s);
+                var details = plist.Count == 0 ? head : head + " in " + GroupModels(plist, 128 - (head + " in ").Length);
+                return new PageText { Name = name, Details = details, State = GroupModels(s.RunningModels, 128), Hover = s.CtxMax > 0 ? "Context " + Tok(s.CtxUsed) + " of " + Tok(s.CtxMax) : null };
             }
             if (name == "tokens")
             {
@@ -476,7 +492,7 @@ namespace T3Presence
             }
             var s = ReadAll(); var sb = new StringBuilder();
             var t = Scan.Range(1); var w = Scan.Range(7); var v = Scan.Range(Cfg.valueDays);
-            sb.AppendLine(Json.Write(new Dictionary<string, object> { {"error",s.Error},{"running",s.Running},{"subagents",s.Subagents},{"sessions",s.Sessions},{"threads",s.Threads},{"project",s.Project},{"model",s.Model},{"live",s.Live},{"runningModels",s.RunningModels},{"ctx",s.CtxUsed+"/"+s.CtxMax},
+            sb.AppendLine(Json.Write(new Dictionary<string, object> { {"error",s.Error},{"running",s.Running},{"subagents",s.Subagents},{"sessions",s.Sessions},{"threads",s.Threads},{"project",s.Project},{"model",s.Model},{"live",s.Live},{"runningModels",s.RunningModels},{"runningProjects",s.RunningProjects},{"ctx",s.CtxUsed+"/"+s.CtxMax},
                 {"today",t},{"week",w},{"valueWindow",v},{"scanError",Scan.Error},{"plan5h",Plan.FiveHour},{"planWeek",Plan.Week},{"planSource",Plan.FromHub ? "hub" : "logs"},{"planAccounts",Plan.Accounts},{"hubError",Plan.HubError},{"coverage",Coverage()} }));
             foreach (var n in Config.AllPages)
             {
@@ -494,10 +510,13 @@ namespace T3Presence
         }
         public void Reschedule() { if (timer != null) timer.Change(Math.Max(15, Cfg.pageSeconds) * 1000, Math.Max(15, Cfg.pageSeconds) * 1000); Poke(); }
         public void Poke() { ThreadPool.QueueUserWorkItem(_ => Tick(false)); }
+        // Chip click: show that page now and give it a full pageSeconds before rotating on.
+        public void JumpTo(string name) { jump = name; Reschedule(); }
         public void Stop()
         {
             stopping = true;
             if (timer != null) timer.Dispose();
+            if (retry != null) retry.Dispose();
             foreach (var l in links) l.Stop();
             try
             {
@@ -531,7 +550,8 @@ namespace T3Presence
                     if (snap.Pages.Count == 0) snap.NoneReason = "No pages to show";
                     else
                     {
-                        if (advance) page++;
+                        var j = jump; jump = null; int ji = j == null ? -1 : snap.Pages.IndexOf(j);
+                        if (ji >= 0) page = ji; else if (advance) page++;
                         var name = snap.Pages[Math.Max(page, 0) % snap.Pages.Count];
                         shown = PageFor(name, s);
                         act = Activity(shown, s, sessionStart);
@@ -555,6 +575,12 @@ namespace T3Presence
                         lastKey = key; sentAny = true; lastSend = DateTime.UtcNow;
                     }
                     catch (Exception e) { Log.Write("send failed: " + e.Message); Rpc.Close(); }
+                }
+                else if (Rpc.Ready && key != lastKey)
+                {   // rate limited: resend once the 14 s gap is up so a chip click still reaches Discord
+                    var wait = Math.Max(500, (int)(14000 - (DateTime.UtcNow - lastSend).TotalMilliseconds) + 200);
+                    if (retry != null) retry.Dispose();
+                    retry = new Timer(_ => Tick(false), null, wait, Timeout.Infinite);
                 }
                 snap.Conn = Rpc.Ready ? "connected" : Rpc.Open ? "connecting" : "down"; snap.User = Rpc.User;
                 var u = Updated; if (u != null) u(snap);

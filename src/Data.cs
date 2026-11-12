@@ -94,7 +94,7 @@ namespace T3Presence
         public bool Waiting;
         public long Running, Subagents, Sessions, Threads, CtxUsed, CtxMax;
         public DateTime LastAt = DateTime.MinValue;
-        public List<string> RunningModels = new List<string>();
+        public List<string> RunningModels = new List<string>(), RunningProjects = new List<string>();
         public string Live
         {
             get
@@ -167,6 +167,8 @@ namespace T3Presence
             s.LastAt = ParseUtc(Json.Str(Json.Get(o, "lastAt")));
             var sel = Json.Get(o, "selections") as object[];
             if (sel != null) foreach (var x in sel) s.RunningModels.Add(Label(x as string));
+            var pr = Json.Get(o, "projects") as object[];
+            if (pr != null) foreach (var x in pr) { var t = x as string; if (t != null) s.RunningProjects.Add(t); }
             var w = Json.Get(o, "waiting"); s.Waiting = w is bool && (bool)w;
             s.LiveType = Json.Str(Json.Get(o, "liveType")); s.LiveTool = Json.Str(Json.Get(o, "liveTool"));
             s.LiveStatus = Json.Str(Json.Get(o, "liveStatus")); s.LiveAt = Json.Str(Json.Get(o, "liveAt"));
@@ -183,8 +185,9 @@ namespace T3Presence
             foreach (var x in ok)
             {
                 m.Running += x.Running; m.Subagents += x.Subagents; m.Sessions += x.Sessions; m.Threads += x.Threads;
-                m.RunningModels.AddRange(x.RunningModels); m.Waiting |= x.Waiting && x.Running > 0;
+                m.RunningModels.AddRange(x.RunningModels); m.RunningProjects.AddRange(x.RunningProjects); m.Waiting |= x.Waiting && x.Running > 0;
             }
+            m.RunningProjects = m.RunningProjects.Distinct().ToList();
             var live = ok.Where(x => x.Running > 0).OrderByDescending(x => x.LiveAt ?? "", StringComparer.Ordinal).FirstOrDefault();
             if (live != null) { m.LiveType = live.LiveType; m.LiveTool = live.LiveTool; m.LiveStatus = live.LiveStatus; m.LiveAt = live.LiveAt; }
             return m;
@@ -208,6 +211,8 @@ namespace T3Presence
                         s.LastAt = ParseUtc(last[0][1]);
                     }
                     foreach (var r in db.Query("select json_extract(payload_json,'$.modelSelection') from " + P + "runs where status='running'", 1)) s.RunningModels.Add(Label(r[0]));
+                    // Project titles of running runs, newest first: the activity page lists every one, not just the last.
+                    foreach (var r in db.Query("select coalesce(p.title,'No project') from " + P + "runs r join " + P + "threads t on t.thread_id=r.thread_id left join projection_projects p on p.project_id=t.project_id where r.status='running' group by 1 order by max(r.requested_at) desc", 1)) s.RunningProjects.Add(r[0]);
                     var ctx = db.Query("select json_extract(payload_json,'$.tokenUsage.usedTokens'), json_extract(payload_json,'$.tokenUsage.maxTokens') from " + P + "provider_turns where provider_turn_id in (select provider_turn_id from " + P + "provider_turns order by started_at desc limit 40) and json_extract(payload_json,'$.tokenUsage.usedTokens') is not null order by started_at desc limit 1", 2);
                     if (ctx.Count > 0) { long.TryParse(ctx[0][0], out s.CtxUsed); long.TryParse(ctx[0][1], out s.CtxMax); }
                     if (s.Running > 0)

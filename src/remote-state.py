@@ -18,6 +18,7 @@ def read():
             "sessions": one("select count(*) from " + P + "provider_sessions where status='ready'"),
             "threads": one("select count(*) from " + P + "threads where archived_at is null and deleted_at is null"),
             "selections": [r[0] for r in c.execute("select json_extract(payload_json,'$.modelSelection') from " + P + "runs where status='running'")],
+            "projects": [r[0] for r in c.execute("select coalesce(p.title,'No project') from " + P + "runs r join " + P + "threads t on t.thread_id=r.thread_id left join projection_projects p on p.project_id=t.project_id where r.status='running' group by 1 order by max(r.requested_at) desc")],
         }
         r = c.execute("select json_extract(r.payload_json,'$.modelSelection'), coalesce(r.completed_at,r.requested_at), coalesce(p.title,'No project') from " + P + "runs r join " + P + "threads t on t.thread_id=r.thread_id left join projection_projects p on p.project_id=t.project_id order by r.requested_at desc limit 1").fetchone()
         if r:
